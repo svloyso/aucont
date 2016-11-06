@@ -1,6 +1,3 @@
-//
-// Created by svloyso on 06.11.16.
-//
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -20,9 +17,6 @@
 
 #include "aucont_common.h"
 
-
-#define STACK_SIZE (1024 * 1024)
-static char child_stack[STACK_SIZE];
 
 static void usage(const char* pname) {
 	std::cout << "usage: " << pname << " [-d --cpu CPU_PERC --net IP] IMAGE_PATH CMD [ARGS]" << std::endl;
@@ -46,20 +40,27 @@ struct context {
 };
 
 void setup_mount(const char* root) {
-	mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL);
+
+	if(mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL))
+		errExit("mount");
 
 	char path[100];
+	/*
 	sprintf(path, "%s/proc", root);
-	mount("proc", path, "proc", MS_NOEXEC, NULL);
+	if(mount("proc", path, "proc", 0, NULL) == -1)
+		errExit("mount-proc");
+	*/
 
 	sprintf(path, "%s/sys", root);
-	mount("sysfs", path, "sysfs", MS_NOEXEC, NULL);
+	if(mount("sysfs", path, "sysfs", MS_NOEXEC, NULL) == -1)
+		errExit("mount-sys");
 
 	const char* old_root = ".old_root";
 	sprintf(path, "%s/%s", root, old_root);
 	mkdir(path, 0777);
 
-	mount(root, root, "bind", MS_BIND | MS_REC, NULL);
+	if(mount(root, root, "bind", MS_BIND | MS_REC, NULL) == -1)
+		errExit("mount-bind");
 	sprintf(path, "%s/%s", root, old_root);
 	syscall(SYS_pivot_root, root, path);
 
@@ -69,11 +70,11 @@ void setup_mount(const char* root) {
 	umount2(path, MNT_DETACH);
 }
 
-void set_uts(int uid, int gid) {
+void set_uts(int pid, int uid, int gid) {
 	int fd;
 	char filepath[PATH_MAX];
 	char line[255];
-	sprintf(filepath, "/proc/%d/uid_map", getpid());
+	sprintf(filepath, "/proc/%d/uid_map", pid);
 	sprintf(line, "0 %d 1", uid);
 
 	fd = open(filepath, O_RDWR);
@@ -82,7 +83,7 @@ void set_uts(int uid, int gid) {
 	if(write(fd, line, strlen(line)) == -1)
 		errExit("write");
 
-	sprintf(filepath, "/proc/%d/setgroups", getpid());
+	sprintf(filepath, "/proc/%d/setgroups", pid);
 	sprintf(line, "deny");
 
 	fd = open(filepath, O_RDWR);
@@ -91,7 +92,7 @@ void set_uts(int uid, int gid) {
 	if(write(fd, line, strlen(line)) == -1)
 		errExit("write");
 
-	sprintf(filepath, "/proc/%d/gid_map", getpid());
+	sprintf(filepath, "/proc/%d/gid_map", pid);
 	sprintf(line, "0 %d 1", gid);
 
 	fd = open(filepath, O_RDWR);
@@ -111,18 +112,21 @@ int cont_func(void* arg) {
 	reg_cont(getpid());
 	std::cout << getpid() << std::endl;
 
+	set_hostname(contname);
+	set_uts(cnt->pid, cnt->uid, cnt->gid);
+	setup_mount(cnt->root);
+
 	if(cnt->daemon) {
 		umask(0);
 		setsid();
 		close(STDIN_FILENO);
 		close(STDOUT_FILENO);
 		close(STDERR_FILENO);
+
+		if(fork())
+			pause();
 	}
 
-	set_hostname(contname);
-
-	set_uts(cnt->uid, cnt->gid);
-	setup_mount(cnt->root);
 	execvp(*cnt->argv, cnt->argv);
 }
 
@@ -157,7 +161,7 @@ int main(int argc, char* argv[]) {
 	if(optind >= argc)
 		usage(argv[0]);
 
-	int flags = CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWUSER | CLONE_NEWUTS;
+	int flags = CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWUSER | CLONE_NEWUTS | CLONE_NEWPID;
 
 	context cnt;
 	cnt.root = argv[optind];
@@ -166,13 +170,14 @@ int main(int argc, char* argv[]) {
 	cnt.gid = getgid();
 	cnt.daemon = daemonize;
 
-
-	if(daemonize) {
-		clone(cont_func, child_stack + STACK_SIZE, flags, &cnt);
-	} else {
-		if(unshare(flags) == -1)
-			errExit("unshare");
-		cont_func(&cnt);
+	if(daemonize && fork()) {
+		return EXIT_SUCCESS;
 	}
+
+	cnt.pid = getpid();
+	if(unshare(flags) == -1)
+		errExit("unshare");
+
+	cont_func(&cnt);
 	return EXIT_SUCCESS;
 }

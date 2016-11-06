@@ -1,11 +1,10 @@
-//
-// Created by svloyso on 06.11.16.
-//
 
 #include <iostream>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sstream>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include "aucont_common.h"
 
@@ -36,6 +35,7 @@ int main(int argc, char* argv[]) {
 	enter_ns(pid, "user");
 	enter_ns(pid, "ipc");
 	enter_ns(pid, "net");
+	//enter_ns(pid, "pid");
 	enter_ns(pid, "uts");
 	enter_ns(pid, "mnt");
 

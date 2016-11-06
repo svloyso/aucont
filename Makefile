@@ -1,7 +1,7 @@
 OUT=bin
 SRC=src
 
-all: $(OUT)/aucont_start $(OUT)/aucont_stop $(OUT)/aucont_list $(OUT)/aucont_exec
+all: $(OUT) $(OUT)/aucont_start $(OUT)/aucont_stop $(OUT)/aucont_list $(OUT)/aucont_exec
 
 ${OUT}:
 	mkdir -p ${OUT}
@@ -21,4 +21,9 @@ $(OUT)/aucont_list: $(OUT)/aucont_list.o $(OUT)/aucont_common.o
 $(OUT)/aucont_exec: $(OUT)/aucont_exec.o $(OUT)/aucont_common.o
 	g++ $(OUT)/aucont_exec.o $(OUT)/aucont_common.o -o $(OUT)/aucont_exec
 
+clean:
+	rm -rf $(OUT)
+
 include $(wildcard $(OUT)/*.d)
+
+.PHONY: clean all

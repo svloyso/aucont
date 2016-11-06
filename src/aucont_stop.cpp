@@ -1,11 +1,10 @@
-//
-// Created by svloyso on 06.11.16.
-//
 
 #include <iostream>
 
 #include <signal.h>
 #include <stdlib.h>
+
+#include "aucont_common.h"
 
 static void usage(const char* pname) {
 	std::cout << "usage: " << pname << " PID [SIG_NUM]" << std::endl;
@@ -27,4 +26,6 @@ int main(int argc, char* argv[]) {
 		sig = atoi(argv[2]);
 
 	kill(pid, sig);
+	unreg_cont(pid);
+
 }

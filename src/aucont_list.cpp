@@ -1,6 +1,3 @@
-//
-// Created by svloyso on 06.11.16.
-//
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -12,7 +9,6 @@
 #include "aucont_common.h"
 
 int main() {
-	sleep(1);
 	std::vector<int> conts;
 	list_cont(conts);
 
