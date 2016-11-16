@@ -115,6 +115,33 @@ void set_hostname(const char* hostname) {
 	sethostname(hostname, strlen(hostname));
 }
 
+void set_cpu(int perc, int pid) {
+    std::string groupname = std::string("group") + std::to_string(pid);
+    std::string grouppath = std::string("/sys/fs/cgroup/cpu/") + groupname;
+    if(mkdir(grouppath.c_str(), 0777) < 0) 
+        errExit("mkdir:cgroup");
+    
+    perc *= 10000;
+    int fd = open((grouppath + "/cpu.cfs_period_us").c_str(), O_RDWR);
+
+    if(fd < 0)
+        errExit("cgroup:open:cpu.cfs_period_us");
+    dprintf(fd, "%d", perc);
+    close(fd);
+
+    fd = open((grouppath + "/tasks").c_str(), O_RDWR);
+    if(fd < 0)
+        errExit("cgroup:open:tasks");
+    dprintf(fd, "%d", pid);
+    close(fd);
+
+    fd = open((grouppath + "/notify_on_release").c_str(), O_RDWR);
+    if(fd < 0)
+        errExit("cgroup:open:notify_on_release");
+    write(fd, "1", 2);
+    close(fd);
+}
+
 
 int cont_func(void* arg) {
 	context* cnt = (context*)arg;
@@ -129,6 +156,8 @@ int cont_func(void* arg) {
 	set_uts(pid, cnt->uid, cnt->gid);
 	setup_mount(cnt->root);
     
+    
+
     if(cnt->daemon) {
 	    umask(0);
 		setsid();
@@ -144,13 +173,13 @@ int cont_func(void* arg) {
 int main(int argc, char* argv[]) {
 	int opt;
 	static struct option long_options[] = {
-			{"cpu", optional_argument, 0, 'c'},
-			{"net", optional_argument, 0, 'n'},
+			{"cpu", required_argument, 0, 'c'},
+			{"net", required_argument, 0, 'n'},
 			{0, 0, 0, 0}
 	};
 
 	bool daemonize = false;
-	int cpu;
+	int cpu = 100;
 	char net[16];
 
 	while ((opt = getopt_long(argc, argv, "d", long_options, NULL)) != -1) {
@@ -160,6 +189,10 @@ int main(int argc, char* argv[]) {
 				break;
 			case 'c':
 				cpu = atoi(optarg);
+                if(cpu < 0 || cpu > 100) {
+                    std::cout << "err: cpu param is out of range" << std::endl;
+                    return EXIT_FAILURE;
+                }
 				break;
 			case 'n':
 				strncpy(net, optarg, 16);
@@ -180,6 +213,7 @@ int main(int argc, char* argv[]) {
 	cnt.uid = getuid();
 	cnt.gid = getgid();
 	cnt.daemon = daemonize;
+    
 
     if(pipe(cnt.pipe) == -1) 
         errExit("pipe");
@@ -191,6 +225,9 @@ int main(int argc, char* argv[]) {
 	std::cout << child_pid << std::endl;
     reg_cont(child_pid);
 
+    if(cpu != 100) {
+        set_cpu(cpu, child_pid);
+    }    
     write(cnt.pipe[1], &child_pid, sizeof(child_pid));
 
     close(cnt.pipe[0]);

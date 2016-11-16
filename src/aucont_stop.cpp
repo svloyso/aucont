@@ -3,6 +3,8 @@
 
 #include <signal.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <wait.h>
 
 #include "aucont_common.h"
 
@@ -26,6 +28,13 @@ int main(int argc, char* argv[]) {
 		sig = atoi(argv[2]);
 
 	kill(pid, sig);
+    waitpid(pid, NULL, 0);
+    sleep(1);
 	unreg_cont(pid);
 
+    std::string cgroup = std::string("/sys/fs/cgroup/cpu/") + "group" + std::to_string(pid);
+    if(access(cgroup.c_str(), F_OK) == 0) {
+        if(rmdir(cgroup.c_str())) 
+            errExit("rmcgroup");
+    }
 }
