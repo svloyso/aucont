@@ -35,7 +35,7 @@ int main(int argc, char* argv[]) {
 	enter_ns(pid, "user");
 	enter_ns(pid, "ipc");
 	enter_ns(pid, "net");
-	//enter_ns(pid, "pid");
+	enter_ns(pid, "pid");
 	enter_ns(pid, "uts");
 	enter_ns(pid, "mnt");
 

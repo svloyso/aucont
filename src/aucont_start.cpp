@@ -8,15 +8,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
-#include <linux/limits.h>
 #include <fcntl.h>
 #include <wait.h>
+
+#include <linux/limits.h>
 #include <sys/stat.h>
 #include <syscall.h>
 #include <sys/mount.h>
 
 #include "aucont_common.h"
 
+const int STACK_SIZE = 1024 * 1024;
+char stack[STACK_SIZE];
 
 static void usage(const char* pname) {
 	std::cout << "usage: " << pname << " [-d --cpu CPU_PERC --net IP] IMAGE_PATH CMD [ARGS]" << std::endl;
@@ -31,50 +34,56 @@ static void usage(const char* pname) {
 }
 
 struct context {
-	int pid;
 	int uid;
 	int gid;
 	char** argv;
 	char* root;
 	bool daemon;
+    int pipe[2];
 };
 
 void setup_mount(const char* root) {
 
-	if(mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL))
-		errExit("mount");
+	if (mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL))
+		errExit("setup_mount:mount");
 
 	char path[100];
-	/*
 	sprintf(path, "%s/proc", root);
-	if(mount("proc", path, "proc", 0, NULL) == -1)
-		errExit("mount-proc");
-	*/
+	if (mount("proc", path, "proc", MS_NOEXEC, NULL))
+		errExit("setup_mount:mount");
 
 	sprintf(path, "%s/sys", root);
-	if(mount("sysfs", path, "sysfs", MS_NOEXEC, NULL) == -1)
-		errExit("mount-sys");
+	if (mount("sysfs", path, "sysfs", MS_NOEXEC, NULL))
+		errExit("setup_mount:mount");
 
-	const char* old_root = ".old_root";
+	char const * old_root = ".old_root_basta228";
 	sprintf(path, "%s/%s", root, old_root);
-	mkdir(path, 0777);
+	if (access(path, F_OK) && mkdir(path, 0777))
+		errExit("setup_mount:mkdir");
 
-	if(mount(root, root, "bind", MS_BIND | MS_REC, NULL) == -1)
-		errExit("mount-bind");
+	if (mount(root, root, "bind", MS_BIND | MS_REC, NULL)) {
+		errExit("setup_mount:bind");
+	}
+
 	sprintf(path, "%s/%s", root, old_root);
-	syscall(SYS_pivot_root, root, path);
+	if (syscall(SYS_pivot_root, root, path)) {
+		errExit("setup_mount:syscall");
+	}
 
-	chdir("/");
+	if (chdir("/")) {
+		errExit("setup_mount:chdir");
+	}
 
 	sprintf(path, "/%s", old_root);
-	umount2(path, MNT_DETACH);
+	if (umount2(path, MNT_DETACH))
+		errExit("setup_mount:umount2");
+
 }
 
 void set_uts(int pid, int uid, int gid) {
 	int fd;
 	char filepath[PATH_MAX];
-	char line[255];
-	sprintf(filepath, "/proc/%d/uid_map", pid);
+	char line[255]; sprintf(filepath, "/proc/%d/uid_map", pid);
 	sprintf(line, "0 %d 1", uid);
 
 	fd = open(filepath, O_RDWR);
@@ -106,28 +115,30 @@ void set_hostname(const char* hostname) {
 	sethostname(hostname, strlen(hostname));
 }
 
+
 int cont_func(void* arg) {
-	static const char* contname = "container";
 	context* cnt = (context*)arg;
-	reg_cont(getpid());
-	std::cout << getpid() << std::endl;
 
-	set_hostname(contname);
-	set_uts(cnt->pid, cnt->uid, cnt->gid);
+	set_hostname("container");
+
+    int pid;
+    read(cnt->pipe[0], &pid, sizeof(pid));
+    close(cnt->pipe[0]);
+    close(cnt->pipe[1]);
+
+	set_uts(pid, cnt->uid, cnt->gid);
 	setup_mount(cnt->root);
-
-	if(cnt->daemon) {
-		umask(0);
+    
+    if(cnt->daemon) {
+	    umask(0);
 		setsid();
 		close(STDIN_FILENO);
 		close(STDOUT_FILENO);
 		close(STDERR_FILENO);
-
-		if(fork())
-			pause();
-	}
+    }
 
 	execvp(*cnt->argv, cnt->argv);
+    return 0; // never reached
 }
 
 int main(int argc, char* argv[]) {
@@ -161,7 +172,7 @@ int main(int argc, char* argv[]) {
 	if(optind >= argc)
 		usage(argv[0]);
 
-	int flags = CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWUSER | CLONE_NEWUTS | CLONE_NEWPID;
+	int flags = CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWUSER | CLONE_NEWUTS | CLONE_NEWPID | SIGCHLD;
 
 	context cnt;
 	cnt.root = argv[optind];
@@ -170,14 +181,29 @@ int main(int argc, char* argv[]) {
 	cnt.gid = getgid();
 	cnt.daemon = daemonize;
 
-	if(daemonize && fork()) {
-		return EXIT_SUCCESS;
-	}
+    if(pipe(cnt.pipe) == -1) 
+        errExit("pipe");
 
-	cnt.pid = getpid();
-	if(unshare(flags) == -1)
-		errExit("unshare");
+    int child_pid;
+	if((child_pid = clone(cont_func, stack + STACK_SIZE, flags, &cnt)) == -1)
+	    errExit("clone");
 
-	cont_func(&cnt);
+	std::cout << child_pid << std::endl;
+    reg_cont(child_pid);
+
+    write(cnt.pipe[1], &child_pid, sizeof(child_pid));
+
+    close(cnt.pipe[0]);
+    close(cnt.pipe[1]);
+
+    if(daemonize) {
+	    umask(0);
+		setsid();
+		close(STDIN_FILENO);
+		close(STDOUT_FILENO);
+		close(STDERR_FILENO);
+	} else {
+        wait(NULL);
+    }
 	return EXIT_SUCCESS;
 }
