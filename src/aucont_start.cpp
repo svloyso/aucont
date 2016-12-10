@@ -226,6 +226,9 @@ int cont_func(void* arg) {
 		close(STDIN_FILENO);
 		close(STDOUT_FILENO);
 		close(STDERR_FILENO);
+		open("/dev/null", O_RDONLY);
+		open("/dev/null", O_RDWR);
+		open("/dev/null", O_RDWR);
     }
 
 	execvp(*cnt->argv, cnt->argv);
@@ -319,6 +322,9 @@ int main(int argc, char* argv[]) {
 		close(STDIN_FILENO);
 		close(STDOUT_FILENO);
 		close(STDERR_FILENO);
+		open("/dev/null", O_RDONLY);
+		open("/dev/null", O_RDWR);
+		open("/dev/null", O_RDWR);
 	} else {
         wait(NULL);
     }
