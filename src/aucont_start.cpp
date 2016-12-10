@@ -40,6 +40,9 @@ struct context {
 	char* root;
 	bool daemon;
     int pipe[2];
+	bool set_net;
+	char net[16];
+	char host_net[16];
 };
 
 void setup_mount(const char* root) {
@@ -80,7 +83,7 @@ void setup_mount(const char* root) {
 
 }
 
-void set_uts(int pid, int uid, int gid) {
+void set_userns(int pid, int uid, int gid) {
 	int fd;
 	char filepath[PATH_MAX];
 	char line[255]; sprintf(filepath, "/proc/%d/uid_map", pid);
@@ -115,31 +118,89 @@ void set_hostname(const char* hostname) {
 	sethostname(hostname, strlen(hostname));
 }
 
+#define CPU_PATH "/sys/fs/cgroup/cpu"
+
 void set_cpu(int perc, int pid) {
-    std::string groupname = std::string("group") + std::to_string(pid);
-    std::string grouppath = std::string("/sys/fs/cgroup/cpu/") + groupname;
-    if(mkdir(grouppath.c_str(), 0777) < 0) 
-        errExit("mkdir:cgroup");
-    
-    perc *= 10000;
-    int fd = open((grouppath + "/cpu.cfs_period_us").c_str(), O_RDWR);
+	char path[100];
+	char group_path[255];
+	char cmd[200];
+	size_t cpu_num;
 
-    if(fd < 0)
-        errExit("cgroup:open:cpu.cfs_period_us");
-    dprintf(fd, "%d", perc);
-    close(fd);
+	if(access(CPU_PATH, F_OK)) {
+		if(system("sudo mkdir -p " CPU_PATH))
+			errExit("mkdir " CPU_PATH);
+		if(system("sudo mount -t cgroup -ocpu " CPU_PATH))
+			errExit("mount cgroup");
+	}
 
-    fd = open((grouppath + "/tasks").c_str(), O_RDWR);
-    if(fd < 0)
-        errExit("cgroup:open:tasks");
-    dprintf(fd, "%d", pid);
-    close(fd);
+	sprintf(group_path, CPU_PATH "/group%d", pid);
+	sprintf(cmd, "sudo mkdir -p %s", group_path);
+	std::cerr << cmd << std::endl;
+	if (system(cmd))
+		errExit("mkdir:cgroup");
 
-    fd = open((grouppath + "/notify_on_release").c_str(), O_RDWR);
-    if(fd < 0)
-        errExit("cgroup:open:notify_on_release");
-    write(fd, "1", 2);
-    close(fd);
+	cpu_num = sysconf(_SC_NPROCESSORS_ONLN);
+
+	strcpy(path, group_path);
+	strcat(path, "/cpu.cfs_period_us");
+	sprintf(cmd, "echo %d | sudo tee --append %s ", 1000000, path);
+	std::cerr << cmd << std::endl;
+	if (system(cmd) < 0)
+		errExit("cgroup:set_period");
+
+	strcpy(path, group_path);
+	strcat(path, "/cpu.cfs_quota_us");
+	sprintf(cmd, "echo %ld | sudo tee --append %s > /dev/null", (1000000 * cpu_num * perc) / 100, path);
+	std::cerr << cmd << std::endl;
+	if (system(cmd) < 0)
+		errExit("cgroup:set_quota");
+
+	strcpy(path, group_path);
+	sprintf(path, "/tasks");
+	sprintf(cmd, "echo %d | sudo tee --append %s > /dev/null", pid, path);
+	std::cerr << cmd << std::endl;
+	if (system(cmd))
+		errExit("cgroup:add_tasks");
+}
+
+void setup_net_cont(const char* ip_host, const char* ip_cnt, int pid) {
+	char cmd[256];
+
+	sprintf(cmd, "ip link set lo up");
+	if (system(cmd))
+		errExit("set lo");
+
+	sprintf(cmd, "ip addr add %s/24 dev vethc%d", ip_cnt, pid);
+	if (system(cmd))
+		errExit("add veth addr cont");
+
+	sprintf(cmd, "ip link set vethc%d up", pid);
+	if (system(cmd))
+		errExit("set veth up cont");
+
+	sprintf(cmd, "ip route add default via %s", ip_host);
+	if (system(cmd))
+		errExit("set gateway");
+}
+
+void setup_net_host(const char* ip_host, int pid) {
+	char cmd[255];
+
+	sprintf(cmd, "sudo ip link add vethh%d type veth peer name vethc%d", pid, pid);
+	if (system(cmd))
+		errExit("create veth");
+
+	sprintf(cmd, "sudo ip link set vethc%d netns %d", pid, pid);
+	if (system(cmd))
+		errExit("set veth");
+
+	sprintf(cmd, "sudo ip addr add %s/24 dev vethh%d", ip_host, pid);
+	if (system(cmd))
+		errExit("add veth addr host");
+
+	sprintf(cmd, "sudo ip link set vethh%d up", pid);
+	if (system(cmd))
+		errExit("set veth up host");
 }
 
 
@@ -153,11 +214,12 @@ int cont_func(void* arg) {
     close(cnt->pipe[0]);
     close(cnt->pipe[1]);
 
-	set_uts(pid, cnt->uid, cnt->gid);
+	set_userns(pid, cnt->uid, cnt->gid);
 	setup_mount(cnt->root);
-    
-    
 
+	if(cnt->set_net)
+		setup_net_cont(cnt->host_net, cnt->net, pid);
+    
     if(cnt->daemon) {
 	    umask(0);
 		setsid();
@@ -180,6 +242,7 @@ int main(int argc, char* argv[]) {
 
 	bool daemonize = false;
 	int cpu = 100;
+	bool set_net = false;
 	char net[16];
 
 	while ((opt = getopt_long(argc, argv, "d", long_options, NULL)) != -1) {
@@ -195,7 +258,12 @@ int main(int argc, char* argv[]) {
                 }
 				break;
 			case 'n':
-				strncpy(net, optarg, 16);
+				set_net = true;
+				if(strlen(optarg) > 15) {
+					std::cout << "Invalid ip addr" << std::endl;
+					return 1;
+				}
+				strcpy(net, optarg);
 				break;
 			default:
 				usage(argv[0]);
@@ -213,9 +281,16 @@ int main(int argc, char* argv[]) {
 	cnt.uid = getuid();
 	cnt.gid = getgid();
 	cnt.daemon = daemonize;
-    
+	cnt.set_net = set_net;
+	if(set_net) {
+		strcpy(cnt.net, net);
+		strcpy(cnt.host_net, net);
+		char* p = strrchr(cnt.host_net, '.');
+		int t = atoi(p + 1);
+		sprintf(p + 1, "%d", t + 1);
+	}
 
-    if(pipe(cnt.pipe) == -1) 
+    if(pipe(cnt.pipe) == -1)
         errExit("pipe");
 
     int child_pid;
@@ -227,7 +302,12 @@ int main(int argc, char* argv[]) {
 
     if(cpu != 100) {
         set_cpu(cpu, child_pid);
-    }    
+    }
+
+	if(set_net) {
+		setup_net_host(cnt.host_net, child_pid);
+	}
+
     write(cnt.pipe[1], &child_pid, sizeof(child_pid));
 
     close(cnt.pipe[0]);

@@ -34,7 +34,7 @@ int main(int argc, char* argv[]) {
 
     std::string cgroup = std::string("/sys/fs/cgroup/cpu/") + "group" + std::to_string(pid);
     if(access(cgroup.c_str(), F_OK) == 0) {
-        if(rmdir(cgroup.c_str())) 
+		if(system((std::string("sudo rmdir ") + cgroup).c_str()))
             errExit("rmcgroup");
     }
 }
